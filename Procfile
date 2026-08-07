@@ -1,1 +1,1 @@
-web: gunicorn -w 2 -b 0.0.0.0:$PORT 'wsgi:app' --access-logfile -
+web: gunicorn --preload -w 2 -b 0.0.0.0:$PORT wsgi:app --access-logfile -
