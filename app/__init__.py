@@ -122,108 +122,121 @@ def create_app(config_class=None):
 def ensure_auth_schema():
     """幂等地确保 schema 完整（MySQL/PostgreSQL 双兼容）。"""
     from .db import get_engine, get_conn, make_cursor
+    from .db.postgres import PostgresEngine
     db = get_engine()
+    is_pg = isinstance(db, PostgresEngine)
 
     with get_conn() as conn, make_cursor(conn) as cur:
-        # ===== users =====
-        cur.execute(f"""
-            CREATE TABLE IF NOT EXISTS users (
-                id {db.auto_pk()},
-                name VARCHAR(50) NOT NULL UNIQUE,
-                password_hash VARCHAR(255),
-                role {db.role_ddl()},
-                created_at TIMESTAMP NOT NULL DEFAULT {db.default_now()}
-            ) {db.engine_clause()}""")
-
-        # ===== chat_sessions =====
-        from .db.postgres import PostgresEngine
-        is_pg = isinstance(db, PostgresEngine)
-        cur.execute(
-            f"SELECT COUNT(*) AS n FROM information_schema.tables "
-            f"WHERE table_schema = {db.schema_name_query()} AND table_name = 'chat_sessions'"
-        )
-        if cur.fetchone()["n"] == 0:
-            if is_pg:
-                cur.execute(f"""
-                    CREATE TABLE IF NOT EXISTS chat_sessions (
-                        id VARCHAR(36) PRIMARY KEY,
-                        user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                        title VARCHAR(200),
-                        messages JSONB NOT NULL DEFAULT {db.json_default_empty()},
-                        pinned BOOLEAN NOT NULL DEFAULT FALSE,
-                        model VARCHAR(100),
-                        created_at TIMESTAMP NOT NULL DEFAULT {db.default_now()},
-                        updated_at TIMESTAMP NOT NULL DEFAULT {db.default_now()}
-                    )""")
-                cur.execute(
-                    "CREATE OR REPLACE FUNCTION update_updated_at() "
-                    "RETURNS TRIGGER AS $BODY$ "
-                    "BEGIN NEW.updated_at = NOW(); RETURN NEW; END; "
-                    "$BODY$ LANGUAGE plpgsql"
-                )
-                cur.execute("DROP TRIGGER IF EXISTS chat_sessions_updated_at ON chat_sessions")
-                cur.execute(
-                    "CREATE TRIGGER chat_sessions_updated_at "
-                    "BEFORE UPDATE ON chat_sessions "
-                    "FOR EACH ROW EXECUTE FUNCTION update_updated_at()"
-                )
-            else:
-                cur.execute(f"""
-                    CREATE TABLE IF NOT EXISTS chat_sessions (
-                        id VARCHAR(36) PRIMARY KEY,
-                        user_id INT NOT NULL,
-                        title VARCHAR(200),
-                        messages JSON NOT NULL,
-                        pinned TINYINT(1) NOT NULL DEFAULT 0,
-                        model VARCHAR(100),
-                        created_at DATETIME NOT NULL DEFAULT {db.default_now()},
-                        updated_at DATETIME NOT NULL DEFAULT {db.default_now()}
-                                     ON UPDATE CURRENT_TIMESTAMP,
-                        INDEX idx_sessions_user_pinned (user_id, pinned DESC, updated_at DESC),
-                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                    ) {db.engine_clause()}""")
-
-        # ===== chat_sessions.model 列迁移 =====
+        # ===== 加锁防止多 worker 并发建表（PostgreSQL/MySQL 双兼容） =====
         if is_pg:
-            cur.execute(
-                "SELECT COUNT(*) AS n FROM information_schema.columns "
-                "WHERE table_catalog = current_database() AND table_name = 'chat_sessions' AND column_name = 'model'"
-            )
+            cur.execute("SELECT pg_advisory_lock(7423916)")
         else:
+            cur.execute("SELECT GET_LOCK('web_test1_schema', 30)")
+
+        try:
+            # ===== users =====
+            cur.execute(f"""
+                CREATE TABLE IF NOT EXISTS users (
+                    id {db.auto_pk()},
+                    name VARCHAR(50) NOT NULL UNIQUE,
+                    password_hash VARCHAR(255),
+                    role {db.role_ddl()},
+                    created_at TIMESTAMP NOT NULL DEFAULT {db.default_now()}
+                ) {db.engine_clause()}""")
+
+            # ===== chat_sessions =====
             cur.execute(
-                f"SELECT COUNT(*) AS n FROM information_schema.columns "
-                f"WHERE table_schema = {db.schema_name_query()} AND table_name = 'chat_sessions' AND column_name = 'model'"
+                f"SELECT COUNT(*) AS n FROM information_schema.tables "
+                f"WHERE table_schema = {db.schema_name_query()} AND table_name = 'chat_sessions'"
             )
-        if cur.fetchone()["n"] == 0:
-            cur.execute("ALTER TABLE chat_sessions ADD COLUMN model VARCHAR(100)")
+            if cur.fetchone()["n"] == 0:
+                if is_pg:
+                    cur.execute(f"""
+                        CREATE TABLE IF NOT EXISTS chat_sessions (
+                            id VARCHAR(36) PRIMARY KEY,
+                            user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                            title VARCHAR(200),
+                            messages JSONB NOT NULL DEFAULT {db.json_default_empty()},
+                            pinned BOOLEAN NOT NULL DEFAULT FALSE,
+                            model VARCHAR(100),
+                            created_at TIMESTAMP NOT NULL DEFAULT {db.default_now()},
+                            updated_at TIMESTAMP NOT NULL DEFAULT {db.default_now()}
+                        )""")
+                    cur.execute(
+                        "CREATE OR REPLACE FUNCTION update_updated_at() "
+                        "RETURNS TRIGGER AS $BODY$ "
+                        "BEGIN NEW.updated_at = NOW(); RETURN NEW; END; "
+                        "$BODY$ LANGUAGE plpgsql"
+                    )
+                    cur.execute("DROP TRIGGER IF EXISTS chat_sessions_updated_at ON chat_sessions")
+                    cur.execute(
+                        "CREATE TRIGGER chat_sessions_updated_at "
+                        "BEFORE UPDATE ON chat_sessions "
+                        "FOR EACH ROW EXECUTE FUNCTION update_updated_at()"
+                    )
+                else:
+                    cur.execute(f"""
+                        CREATE TABLE IF NOT EXISTS chat_sessions (
+                            id VARCHAR(36) PRIMARY KEY,
+                            user_id INT NOT NULL,
+                            title VARCHAR(200),
+                            messages JSON NOT NULL,
+                            pinned TINYINT(1) NOT NULL DEFAULT 0,
+                            model VARCHAR(100),
+                            created_at DATETIME NOT NULL DEFAULT {db.default_now()},
+                            updated_at DATETIME NOT NULL DEFAULT {db.default_now()}
+                                         ON UPDATE CURRENT_TIMESTAMP,
+                            INDEX idx_sessions_user_pinned (user_id, pinned DESC, updated_at DESC),
+                            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                        ) {db.engine_clause()}""")
 
-        # ===== login_sessions =====
-        cur.execute(
-            f"SELECT COUNT(*) AS n FROM information_schema.tables "
-            f"WHERE table_schema = {db.schema_name_query()} AND table_name = 'login_sessions'"
-        )
-        if cur.fetchone()["n"] == 0:
+            # ===== chat_sessions.model 列迁移 =====
             if is_pg:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS login_sessions (
-                        sid VARCHAR(64) PRIMARY KEY,
-                        user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-                        expires_at TIMESTAMP NOT NULL
-                    )""")
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_ls_user ON login_sessions(user_id)")
-                cur.execute("CREATE INDEX IF NOT EXISTS idx_ls_expires ON login_sessions(expires_at)")
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM information_schema.columns "
+                    "WHERE table_catalog = current_database() AND table_name = 'chat_sessions' AND column_name = 'model'"
+                )
             else:
-                cur.execute(f"""
-                    CREATE TABLE IF NOT EXISTS login_sessions (
-                        sid VARCHAR(64) PRIMARY KEY,
-                        user_id INT NOT NULL,
-                        created_at DATETIME NOT NULL DEFAULT {db.default_now()},
-                        expires_at DATETIME NOT NULL,
-                        INDEX idx_ls_user (user_id),
-                        INDEX idx_ls_expires (expires_at)
-                    ) {db.engine_clause()}""")
+                cur.execute(
+                    f"SELECT COUNT(*) AS n FROM information_schema.columns "
+                    f"WHERE table_schema = {db.schema_name_query()} AND table_name = 'chat_sessions' AND column_name = 'model'"
+                )
+            if cur.fetchone()["n"] == 0:
+                cur.execute("ALTER TABLE chat_sessions ADD COLUMN model VARCHAR(100)")
 
-        conn.commit()
+            # ===== login_sessions =====
+            cur.execute(
+                f"SELECT COUNT(*) AS n FROM information_schema.tables "
+                f"WHERE table_schema = {db.schema_name_query()} AND table_name = 'login_sessions'"
+            )
+            if cur.fetchone()["n"] == 0:
+                if is_pg:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS login_sessions (
+                            sid VARCHAR(64) PRIMARY KEY,
+                            user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                            created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                            expires_at TIMESTAMP NOT NULL
+                        )""")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_ls_user ON login_sessions(user_id)")
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_ls_expires ON login_sessions(expires_at)")
+                else:
+                    cur.execute(f"""
+                        CREATE TABLE IF NOT EXISTS login_sessions (
+                            sid VARCHAR(64) PRIMARY KEY,
+                            user_id INT NOT NULL,
+                            created_at DATETIME NOT NULL DEFAULT {db.default_now()},
+                            expires_at DATETIME NOT NULL,
+                            INDEX idx_ls_user (user_id),
+                            INDEX idx_ls_expires (expires_at)
+                        ) {db.engine_clause()}""")
+
+            conn.commit()
+        finally:
+            # ===== 释放锁 =====
+            if is_pg:
+                cur.execute("SELECT pg_advisory_unlock(7423916)")
+            else:
+                cur.execute("SELECT RELEASE_LOCK('web_test1_schema')")
 
 
