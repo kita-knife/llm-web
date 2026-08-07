@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}编辑用户 - Web Test1{% endblock %}
+{% block content %}
+<h1>编辑用户 #{{ user.id }}</h1>
+{% if error %}<div class="flash flash-error">{{ error }}</div>{% endif %}
+<form method="POST" action="{{ url_for('pages.users_edit', user_id=user.id) }}" class="form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label>用户名 <input name="name" required value="{{ user.name }}"></label>
+  {% if not is_self or current_user.role in ('admin', 'root') %}
+  <label>角色
+    <select name="role">
+      {% for r in available_roles %}
+        <option value="{{ r }}" {% if r == user.role %}selected{% endif %}>{{ r }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  {% else %}
+  <p class="hint">普通用户不能修改自己的角色。</p>
+  {% endif %}
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">保存</button>
+    <a class="btn" href="{{ url_for('pages.users_list') }}">取消</a>
+  </div>
+</form>
+{% endblock %}

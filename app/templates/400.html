@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}400 - Web Test1{% endblock %}
+{% block content %}
+<h1>400 - 请求无效</h1>
+<p>{{ message }}</p>
+<p><a class="btn" href="{{ url_for('pages.home') }}">回首页</a></p>
+{% endblock %}

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>{% block title %}Web Test1{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <nav class="nav">
+    <div class="nav-brand">
+      <a href="{{ url_for('pages.home') }}">Web Test1</a>
+    </div>
+
+    <div class="nav-menu nav-menu-top">
+      {% if current_user.role in ('admin', 'root') %}
+        <a href="{{ url_for('pages.users_list') }}">用户管理</a>
+      {% endif %}
+      <a href="{{ url_for('chat.chat_index') }}">AI 对话</a>
+    </div>
+
+    {% if request.path.startswith('/chat') and chat_sessions is defined %}
+    <div class="nav-section">
+      <form method="POST" action="{{ url_for('chat.new_session') }}" class="nav-new-form">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-sm btn-primary">+ 新建会话</button>
+      </form>
+      {% for s in chat_sessions %}
+        <div class="nav-session-row {% if s.id == current_session_id %}active{% endif %}">
+          <a href="{{ url_for('chat.chat_session', session_id=s.id) }}"
+             class="nav-session {% if s.pinned %}pinned{% endif %}"
+             title="{{ s.title }}">
+            {% if s.pinned %}<span class="pin-icon">📌</span>{% endif %}
+            <span class="session-title-text">{{ s.title or '新会话' }}</span>
+          </a>
+          <details class="session-menu">
+            <summary>···</summary>
+            <div class="menu-popup">
+              <form method="POST" action="{{ url_for('chat.rename_session', session_id=s.id) }}" class="menu-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <input name="title" value="{{ s.title }}" placeholder="新名字" required>
+                <button type="submit" class="menu-item">✎ 重命名</button>
+              </form>
+              <form method="POST" action="{{ url_for('chat.pin_session', session_id=s.id) }}" class="menu-form">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="menu-item">{% if s.pinned %}📌 取消置顶{% else %}📌 置顶{% endif %}</button>
+              </form>
+              <form method="POST" action="{{ url_for('chat.delete_session', session_id=s.id) }}" class="menu-form"
+                    onsubmit="return confirm('删除此会话？');">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="menu-item danger">🗑 删除</button>
+              </form>
+            </div>
+          </details>
+        </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="nav-menu nav-bottom">
+      {% if current_user %}
+        <a href="{{ url_for('pages.profile') }}" class="nav-user">
+          {% if current_user.role == 'root' %}
+            <span class="badge badge-role-root">root</span>
+          {% elif current_user.role == 'admin' %}
+            <span class="badge badge-role-admin">admin</span>
+          {% else %}
+            <span class="badge badge-role-user">user</span>
+          {% endif %}
+          {{ current_user.name }}
+        </a>
+        <form method="POST" action="{{ url_for('pages.logout') }}" class="inline-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          <button type="submit" class="btn-link">退出</button>
+        </form>
+      {% else %}
+        <a href="{{ url_for('pages.login') }}">登录</a>
+        <a href="{{ url_for('pages.register') }}">注册</a>
+      {% endif %}
+    </div>
+  </nav>
+
+  <main class="main">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flashes">
+          {% for category, msg in messages %}
+            <div class="flash flash-{{ category }}">{{ msg }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+
+  <script>
+  (function() {
+    const details = document.querySelectorAll('details.session-menu');
+    if (!details.length) return;
+
+    document.addEventListener('click', (e) => {
+      details.forEach(d => {
+        if (d.open && !d.contains(e.target)) d.removeAttribute('open');
+      });
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        details.forEach(d => d.removeAttribute('open'));
+      }
+    });
+
+    details.forEach(d => {
+      d.addEventListener('toggle', () => {
+        if (d.open) {
+          details.forEach(other => {
+            if (other !== d) other.removeAttribute('open');
+          });
+        }
+      });
+    });
+  })();
+  </script>
+</body>
+</html>

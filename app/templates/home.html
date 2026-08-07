@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}首页 - Web Test1{% endblock %}
+{% block content %}
+<h1>欢迎来到 Web Test1</h1>
+{% if current_user %}
+  <p>欢迎回来，<strong>{{ current_user.name }}</strong>！</p>
+  <div class="actions">
+    {% if current_user.role in ('admin', 'root') %}
+      <a class="btn btn-primary" href="{{ url_for('pages.users_list') }}">查看用户列表</a>
+    {% endif %}
+    <a class="btn" href="{{ url_for('pages.profile') }}">我的资料</a>
+  </div>
+{% else %}
+  <p>请先登录或注册以使用完整功能。</p>
+  <div class="actions">
+    <a class="btn btn-primary" href="{{ url_for('pages.login') }}">登录</a>
+    <a class="btn" href="{{ url_for('pages.register') }}">注册</a>
+  </div>
+{% endif %}
+{% endblock %}

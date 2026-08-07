@@ -1,0 +1,306 @@
+{% extends "base.html" %}
+{% block title %}{{ session_title }} - AI 对话{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1 style="margin-bottom: 4px;">
+      {{ session_title }}
+      {% if pinned %}<span class="badge badge-role-admin">📌 置顶</span>{% endif %}
+    </h1>
+    <p class="hint" style="margin: 0;">
+      模型：<code>{{ model }}</code>
+      {% if not api_configured %}
+      · <span style="color:#92400e;">⚠ Mock 模式（API 未配置）</span>
+      {% endif %}
+    </p>
+  </div>
+  <form method="POST" action="{{ url_for('chat.delete_session', session_id=session_id) }}"
+    onsubmit="return confirm('确定删除这个会话？');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <button type="submit" class="btn btn-danger btn-sm">删除会话</button>
+  </form>
+</div>
+
+{% if not messages %}
+<div class="chat-prompts">
+  <div class="chat-prompt-card" data-prompt="用 Python 写一段代码，计算斐波那契数列前 20 项，并输出结果">🐍 写一段 Python 代码，计算斐波那契数列前 20 项</div>
+  <div class="chat-prompt-card" data-prompt="简单解释什么是 API，用简单易懂的例子说明">📚 什么是 API？用例子简单解释</div>
+  <div class="chat-prompt-card" data-prompt="帮我写一篇工作周报模板，用 Markdown 格式">📝 帮我写一篇工作周报（Markdown 模板）</div>
+  <div class="chat-prompt-card" data-prompt="现在几点了？你能帮我做些什么？">⏰ 现在几点了？你有哪些功能？</div>
+</div>
+{% endif %}
+
+<div id="chat-history" class="chat-history{% if not messages %} chat-empty{% endif %}">
+  {% for m in messages %}
+  {% if m.role == 'assistant' and m.thinking %}
+  <details class="chat-bubble chat-thinking">
+    <summary>💭 思考过程</summary>
+    <div class="chat-content">{{ m.thinking | safe }}</div>
+  </details>
+  {% endif %}
+  <div class="chat-bubble chat-{{ m.role }}" data-role="{{ m.role }}" data-content="{{ m.content | forceescape }}">
+    <div class="chat-content">{{ m.content | safe }}</div>
+    {% if m.role == 'assistant' %}
+    <div class="chat-actions">
+      <button class="chat-action-btn" data-action="copy">📋 复制</button>
+      <button class="chat-action-btn" data-action="regenerate">🔄 重新生成</button>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<form id="chat-form" class="chat-form">
+  <textarea name="prompt" rows="3" placeholder="输入你的问题，Ctrl+Enter 发送..." required></textarea>
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary" id="send-btn">发送</button>
+  </div>
+</form>
+
+<script>
+  (function () {
+    const form = document.getElementById('chat-form');
+    const history = document.getElementById('chat-history');
+    const btn = document.getElementById('send-btn');
+    const textarea = form.querySelector('textarea');
+    const sessionId = {{ session_id | tojson
+  }};
+
+  history.scrollTop = history.scrollHeight;
+
+  function cardClick(card) {
+    const promptsContainer = document.querySelector('.chat-prompts');
+    if (promptsContainer) {
+      promptsContainer.remove();
+    }
+    if (history.classList.contains('chat-empty')) {
+      history.classList.remove('chat-empty');
+    }
+    send(card.dataset.prompt);
+  }
+  document.querySelectorAll('.chat-prompt-card').forEach(card => {
+    card.addEventListener('click', () => cardClick(card));
+  });
+
+  function md(text) {
+    if (window.marked) return window.marked.parse(text || '');
+    return text || '';
+  }
+
+  function appendBubble(role, extraClass = '') {
+    const div = document.createElement('div');
+    div.className = 'chat-bubble chat-' + role + (extraClass ? ' ' + extraClass : '');
+    div.dataset.role = role;
+    const contentEl = document.createElement('div');
+    contentEl.className = 'chat-content';
+    div.appendChild(contentEl);
+    history.appendChild(div);
+    history.scrollTop = history.scrollHeight;
+    return { div, contentEl };
+  }
+
+  function appendThinkingBubble() {
+    const details = document.createElement('details');
+    details.className = 'chat-bubble chat-thinking';
+    details.open = true;
+    const summary = document.createElement('summary');
+    summary.textContent = '💭 思考过程';
+    const content = document.createElement('div');
+    content.className = 'chat-content';
+    details.appendChild(summary);
+    details.appendChild(content);
+    history.appendChild(details);
+    history.scrollTop = history.scrollHeight;
+    return { details, content };
+  }
+
+  function addActionButtons(bubble) {
+    if (bubble.querySelector('.chat-actions')) return; // 已存在
+    const actions = document.createElement('div');
+    actions.className = 'chat-actions';
+    actions.innerHTML =
+      '<button class="chat-action-btn" data-action="copy">📋 复制</button>' +
+      '<button class="chat-action-btn" data-action="regenerate">🔄 重新生成</button>';
+    bubble.appendChild(actions);
+    attachActionHandlers(bubble);
+  }
+
+  function setSending(sending) {
+    btn.disabled = sending;
+    btn.textContent = sending ? '生成中...' : '发送';
+    textarea.disabled = sending;
+  }
+
+  function attachActionHandlers(bubble) {
+    const buttons = bubble.querySelectorAll('.chat-action-btn');
+    buttons.forEach(b => {
+      b.addEventListener('click', () => {
+        const action = b.dataset.action;
+        if (action === 'copy') {
+          const content = bubble.querySelector('.chat-content').innerText;
+          navigator.clipboard.writeText(content).then(() => {
+            b.textContent = '✓ 已复制';
+            setTimeout(() => { b.textContent = '📋 复制'; }, 1500);
+          }).catch(() => {
+            b.textContent = '✗ 复制失败';
+          });
+        } else if (action === 'regenerate') {
+          // 向前找最近一个 user 气泡（跳过 thinking 等其他元素）
+          let userBubble = bubble.previousElementSibling;
+          while (userBubble && userBubble.dataset.role !== 'user') {
+            userBubble = userBubble.previousElementSibling;
+          }
+          if (!userBubble || userBubble.dataset.role !== 'user') return;
+          const prompt = userBubble.querySelector('.chat-content').innerText;
+          if (!prompt) return;
+          // 删除当前 AI 气泡及其之前的思考气泡（如果有）
+          const toRemove = [bubble];
+          const prev = bubble.previousElementSibling;
+          if (prev && prev.classList.contains('chat-thinking')) {
+            toRemove.push(prev);
+          }
+          toRemove.forEach(el => el.remove());
+          send(prompt, true);
+        }
+      });
+    });
+  }
+
+  // 初始化：给模板里渲染好的 AI 气泡绑定按钮
+  history.querySelectorAll('.chat-bubble.chat-assistant').forEach(attachActionHandlers);
+
+  // 主动设置 marked 配置（如果库加载完）
+  if (window.marked) {
+    marked.setOptions({ breaks: true, gfm: true });
+  } else {
+    window.addEventListener('load', () => {
+      if (window.marked) marked.setOptions({ breaks: true, gfm: true });
+    });
+  }
+
+  let lastUserPrompt = null;
+
+  async function send(prompt, isRegen = false) {
+    if (!isRegen) {
+      const userEls = appendBubble('user');
+      userEls.contentEl.innerHTML = md(prompt);
+      lastUserPrompt = prompt;
+    } else {
+      lastUserPrompt = prompt;
+    }
+    const thinkingEls = appendThinkingBubble();
+    thinkingEls.content.textContent = '';
+    const aiEls = appendBubble('assistant');
+    aiEls.contentEl.textContent = '...';
+    textarea.value = '';
+    setSending(true);
+
+    try {
+      const resp = await fetch('/chat/' + encodeURIComponent(sessionId) + '/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ prompt })
+      });
+      if (!resp.ok) {
+        aiEls.contentEl.textContent = '[错误] HTTP ' + resp.status;
+        return;
+      }
+      const reader = resp.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      let fullText = '';
+      let fullThinking = '';
+      let hasThinking = false;
+      aiEls.contentEl.textContent = '';
+      thinkingEls.details.open = true;
+      let toolStatusEl = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const data = line.slice(6).trim();
+          if (data === '[DONE]') break;
+          try {
+            const obj = JSON.parse(data);
+            if (obj.error) {
+              aiEls.contentEl.textContent = '[错误] ' + obj.error;
+            } else if (obj.thinking) {
+              hasThinking = true;
+              fullThinking += obj.thinking;
+              thinkingEls.content.textContent = fullThinking;
+              thinkingEls.details.open = true;
+              history.scrollTop = history.scrollHeight;
+            } else if (obj.delta) {
+              fullText += obj.delta;
+              aiEls.contentEl.innerHTML = md(fullText);
+              history.scrollTop = history.scrollHeight;
+            } else if (obj.tool) {
+              if (obj.status === 'started') {
+                if (toolStatusEl) toolStatusEl.remove();
+                toolStatusEl = document.createElement('div');
+                toolStatusEl.className = 'tool-status';
+                toolStatusEl.textContent = '🔧 调用工具: ' + obj.tool + '...';
+                const actions = aiEls.div.querySelector('.chat-actions');
+                if (actions) {
+                  aiEls.div.insertBefore(toolStatusEl, actions);
+                } else {
+                  aiEls.div.appendChild(toolStatusEl);
+                }
+              } else if (obj.status === 'done') {
+                if (toolStatusEl) {
+                  toolStatusEl.textContent = '✓ 工具完成: ' + obj.tool;
+                }
+              }
+              history.scrollTop = history.scrollHeight;
+            }
+          } catch (e) { }
+        }
+      }
+      // 完成后重新解析一次确保最终 markdown 正确
+      fullText = fullText || '';
+      // 尝试从 fullText 中剥离 `` 块作为思考过程
+      const thinkMatch = fullText.match(/<think>([\s\S]*?)<\/think>/);
+      if (thinkMatch) {
+        // 填充思考气泡
+        thinkingEls.content.textContent = thinkMatch[1].trim();
+        hasThinking = true;
+        // 从主内容中移除 `` 块
+        fullText = fullText.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+      }
+      if (!hasThinking) {
+        thinkingEls.details.remove();
+      } else {
+        thinkingEls.details.open = false;
+      }
+      aiEls.contentEl.innerHTML = md(fullText);
+      // 流结束后才显示「复制」「重新生成」按钮
+      addActionButtons(aiEls.div);
+    } catch (e) {
+      aiEls.contentEl.textContent = '[网络错误] ' + e.message;
+    } finally {
+      setSending(false);
+      textarea.focus();
+    }
+  }
+
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const p = textarea.value.trim();
+    if (!p) return;
+    send(p);
+  };
+
+  textarea.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+}) ();
+</script>
+{% endblock %}

@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}注册 - Web Test1{% endblock %}
+{% block content %}
+<h1>注册</h1>
+<p class="hint">注册将创建一个普通用户（user 级别）。如需创建 admin / root 用户，请联系已有管理员。</p>
+{% if error %}<div class="flash flash-error">{{ error }}</div>{% endif %}
+<form method="POST" action="{{ url_for('pages.register') }}" class="form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label>用户名 <input name="name" required value="{{ form.name }}"></label>
+  <label>密码（≥4 位） <input name="password" type="password" required></label>
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">注册</button>
+    <span>已有账号？<a href="{{ url_for('pages.login') }}">登录</a></span>
+  </div>
+</form>
+{% endblock %}

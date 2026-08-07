@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}429 - Web Test1{% endblock %}
+{% block content %}
+<h1>429 - 请求过于频繁</h1>
+<p>你触发了限流保护，请稍后再试。</p>
+<p><a class="btn" href="{{ url_for('pages.home') }}">回首页</a></p>
+{% endblock %}

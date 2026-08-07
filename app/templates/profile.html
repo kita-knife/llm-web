@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}我的资料 - Web Test1{% endblock %}
+{% block content %}
+<h1>我的资料</h1>
+<p>用户名：<strong>{{ user.name }}</strong> · 角色：
+  {% if user.role == 'root' %}
+    <span class="badge badge-role-root">root</span>
+  {% elif user.role == 'admin' %}
+    <span class="badge badge-role-admin">admin</span>
+  {% else %}
+    <span class="badge badge-role-user">user</span>
+  {% endif %}
+</p>
+
+<h2>基本信息</h2>
+{% if error %}<div class="flash flash-error">{{ error }}</div>{% endif %}
+<form method="POST" action="{{ url_for('pages.profile') }}" class="form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="action" value="update">
+  <label>用户名 <input name="name" required value="{{ user.name }}"></label>
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">保存</button>
+  </div>
+</form>
+
+<h2>修改密码</h2>
+{% if pwd_error %}<div class="flash flash-error">{{ pwd_error }}</div>{% endif %}
+<form method="POST" action="{{ url_for('pages.profile') }}" class="form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <input type="hidden" name="action" value="change_password">
+  <label>原密码 <input name="old_password" type="password" required></label>
+  <label>新密码（≥4 位） <input name="new_password" type="password" required></label>
+  <label>确认新密码 <input name="confirm_password" type="password" required></label>
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">修改密码</button>
+  </div>
+</form>
+
+<h2>退出</h2>
+<form method="POST" action="{{ url_for('pages.logout') }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <button type="submit" class="btn btn-danger">退出登录</button>
+</form>
+{% endblock %}

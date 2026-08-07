@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}新建用户 - Web Test1{% endblock %}
+{% block content %}
+<h1>新建用户</h1>
+{% if error %}<div class="flash flash-error">{{ error }}</div>{% endif %}
+<form method="POST" action="{{ url_for('pages.users_new') }}" class="form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+  <label>用户名 <input name="name" required autofocus></label>
+  <label>角色
+    <select name="role">
+      {% for r in available_roles %}
+        <option value="{{ r }}" {% if r == 'user' %}selected{% endif %}>{{ r }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>密码（≥4 位） <input name="password" type="password" required></label>
+  <label>确认密码 <input name="password_confirm" type="password" required></label>
+  <div class="form-actions">
+    <button type="submit" class="btn btn-primary">创建</button>
+    <a class="btn" href="{{ url_for('pages.users_list') }}">取消</a>
+  </div>
+</form>
+{% endblock %}
