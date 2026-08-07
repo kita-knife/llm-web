@@ -1,18 +1,43 @@
 import os
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
+def _parse_database_url(url: str) -> dict:
+    """解析 postgresql://user:pwd@host:port/dbname 格式的 DATABASE_URL."""
+    p = urlparse(url)
+    return {
+        "DB_TYPE": "postgres",
+        "DB_USER": p.username or "",
+        "DB_PASSWORD": p.password or "",
+        "DB_HOST": p.hostname or "",
+        "DB_PORT": str(p.port or 5432),
+        "DB_NAME": (p.path or "/").lstrip("/"),
+    }
+
+
+_DB_URL = os.getenv("DATABASE_URL", "")
+_DB_FROM_URL = _parse_database_url(_DB_URL) if _DB_URL else {}
+
+
+def _db(key: str, default: str) -> str:
+    # 优先级：DATABASE_URL 解析值 > 单独 DB_* env > 默认值
+    return _DB_FROM_URL.get(key) or os.getenv(key) or default
+
+
 class BaseConfig:
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me-in-production")
-    DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
-    DB_PORT = int(os.getenv("DB_PORT", "3306"))
-    DB_USER = os.getenv("DB_USER", "appuser")
-    DB_PASSWORD = os.getenv("DB_PASSWORD", "")
-    DB_NAME = os.getenv("DB_NAME", "web_test1")
-    DB_TYPE = os.getenv("DB_TYPE", "mysql").lower()
+
+    DB_HOST = _db("DB_HOST", "127.0.0.1")
+    DB_PORT = int(_db("DB_PORT", "3306"))
+    DB_USER = _db("DB_USER", "appuser")
+    DB_PASSWORD = _db("DB_PASSWORD", "")
+    DB_NAME = _db("DB_NAME", "web_test1")
+    DB_TYPE = _db("DB_TYPE", "mysql").lower()
+
     DEBUG = False
     JSON_AS_ASCII = False
     LLM_API_BASE = os.getenv(

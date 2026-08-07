@@ -169,6 +169,24 @@ VALUES ('admin', '<werkzeug 哈希>', 'admin');
 
 ## 部署
 
+### Railway（一键部署）
+
+1. **推送代码到 GitHub**（需 Personal Access Token，见上方提示）
+2. **Railway 控制台**：https://railway.app → New Project → Deploy from GitHub repo
+3. **添加 PostgreSQL**：New → Database → PostgreSQL（Railway 自动注入 `DATABASE_URL`）
+4. **配置环境变量**：
+   | 变量 | 值 |
+   |------|----|
+   | `SECRET_KEY` | `python -c "import secrets;print(secrets.token_urlsafe(32))"` 生成 |
+   | `LLM_API_BASE` | 如 `https://api.minimax.chat/v1` |
+   | `LLM_API_KEY` | 你的 API Key |
+   | `LLM_MODEL` | 如 `MiniMax-M3` |
+5. **自动获得域名**：Railway 分配 `xxx.up.railway.app`，自动 HTTPS
+
+数据库迁移：首次启动时 `ensure_auth_schema()` 自动建表。
+
+### 自托管（VPS + Docker）
+
 详见 [TOOLS_AND_DEPLOY.md](./TOOLS_AND_DEPLOY.md)。
 
 ## 开发
