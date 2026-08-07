@@ -15,11 +15,12 @@ class BaseConfig:
     DB_TYPE = os.getenv("DB_TYPE", "mysql").lower()
     DEBUG = False
     JSON_AS_ASCII = False
-    MINIMAX_API_BASE = os.getenv("MINIMAX_API_BASE", "https://api.minimax.chat/v1")
-    MINIMAX_API_KEY = os.getenv("MINIMAX_API_KEY", "")
-    MINIMAX_MODEL = os.getenv("MINIMAX_MODEL", "MiniMax-M3")
-    CHAT_HISTORY_LIMIT = int(os.getenv("CHAT_HISTORY_LIMIT", "20"))
-    CHAT_TIMEOUT = int(os.getenv("CHAT_TIMEOUT", "60"))
+    LLM_API_BASE = os.getenv(
+        "LLM_API_BASE",
+        os.getenv("MINIMAX_API_BASE", "https://api.minimax.chat/v1"),
+    )
+    LLM_API_KEY = os.getenv("LLM_API_KEY", os.getenv("MINIMAX_API_KEY", ""))
+    LLM_MODEL = os.getenv("LLM_MODEL", os.getenv("MINIMAX_MODEL", "MiniMax-M3"))
 
 
 class DevConfig(BaseConfig):

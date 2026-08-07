@@ -15,7 +15,7 @@
     </p>
   </div>
   <form method="POST" action="{{ url_for('chat.delete_session', session_id=session_id) }}"
-    onsubmit="return confirm('确定删除这个会话？');">
+    data-confirm="确定删除这个会话？">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit" class="btn btn-danger btn-sm">删除会话</button>
   </form>
@@ -54,6 +54,7 @@
   <textarea name="prompt" rows="3" placeholder="输入你的问题，Ctrl+Enter 发送..." required></textarea>
   <div class="form-actions">
     <button type="submit" class="btn btn-primary" id="send-btn">发送</button>
+    <button type="button" class="btn btn-danger" id="stop-btn" style="display:none">停止</button>
   </div>
 </form>
 
@@ -62,6 +63,7 @@
     const form = document.getElementById('chat-form');
     const history = document.getElementById('chat-history');
     const btn = document.getElementById('send-btn');
+    const stopBtn = document.getElementById('stop-btn');
     const textarea = form.querySelector('textarea');
     const sessionId = {{ session_id | tojson
   }};
@@ -128,8 +130,16 @@
   function setSending(sending) {
     btn.disabled = sending;
     btn.textContent = sending ? '生成中...' : '发送';
+    stopBtn.style.display = sending ? '' : 'none';
     textarea.disabled = sending;
   }
+
+  stopBtn.addEventListener('click', () => {
+    if (abortController) {
+      abortController.abort();
+      abortController = null;
+    }
+  });
 
   function attachActionHandlers(bubble) {
     const buttons = bubble.querySelectorAll('.chat-action-btn');
@@ -179,6 +189,7 @@
   }
 
   let lastUserPrompt = null;
+  let abortController = null;
 
   async function send(prompt, isRegen = false) {
     // 手动输入时也关闭卡片，显示聊天区
@@ -203,10 +214,12 @@
     setSending(true);
 
     try {
+      abortController = new AbortController();
       const resp = await fetch('/chat/' + encodeURIComponent(sessionId) + '/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt })
+        body: JSON.stringify({ prompt }),
+        signal: abortController.signal
       });
       if (!resp.ok) {
         aiEls.contentEl.textContent = '[错误] HTTP ' + resp.status;
@@ -288,7 +301,12 @@
       // 流结束后才显示「复制」「重新生成」按钮
       addActionButtons(aiEls.div);
     } catch (e) {
-      aiEls.contentEl.textContent = '[网络错误] ' + e.message;
+      if (e.name === 'AbortError') {
+        aiEls.contentEl.textContent = (aiEls.contentEl.textContent || '') + '\n[已停止]';
+        addActionButtons(aiEls.div);
+      } else {
+        aiEls.contentEl.textContent = '[网络错误] ' + e.message;
+      }
     } finally {
       setSending(false);
       textarea.focus();

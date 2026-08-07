@@ -46,6 +46,9 @@ class PostgresEngine(DatabaseEngine):
     def schema_name_query(self) -> str:
         return "current_database()"
 
+    def bool_toggle(self, col: str) -> str:
+        return f"NOT {col}"
+
     # ── 错误类 ──
     @property
     def integrity_error(self):

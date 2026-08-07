@@ -32,7 +32,7 @@
           <a class="btn btn-sm" href="{{ url_for('pages.users_edit', user_id=u.id) }}">编辑</a>
         {% endif %}
         {% if delete_perms.get(u.id) %}
-          <form method="POST" action="{{ url_for('pages.users_delete', user_id=u.id) }}" class="inline-form" onsubmit="return confirm('确定删除 {{ u.name }}？');">
+          <form method="POST" action="{{ url_for('pages.users_delete', user_id=u.id) }}" class="inline-form" data-confirm="确定删除 {{ u.name }}？">
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <button type="submit" class="btn btn-sm btn-danger">删除</button>
           </form>

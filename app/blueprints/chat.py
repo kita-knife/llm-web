@@ -41,7 +41,7 @@ def _now_iso():
 def _load_session(session_id: str, user_id: int):
     with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute(
-            """SELECT id, user_id, title, messages, pinned, created_at, updated_at
+            """SELECT id, user_id, title, messages, pinned, model, created_at, updated_at
                FROM chat_sessions WHERE id=%s AND user_id=%s""",
             (session_id, user_id),
         )
@@ -82,6 +82,15 @@ def _update_session_messages(session_id: str, messages: list):
         conn.commit()
 
 
+def _update_session_model(session_id: str, model: str):
+    with get_conn() as conn, make_cursor(conn) as cur:
+        cur.execute(
+            "UPDATE chat_sessions SET model = %s WHERE id = %s",
+            (model, session_id),
+        )
+        conn.commit()
+
+
 def _build_agent(cfg):
     return Agent(
         model=OpenAILike(
@@ -96,7 +105,7 @@ def _build_agent(cfg):
 
 def _mock_stream(prompt: str):
     msg = (
-        "[Mock 模式] 尚未配置 MINIMAX_API_KEY，请在 .env 设置后重启。\n"
+        "[Mock 模式] 尚未配置 LLM_API_KEY，请在 .env 设置后重启。\n"
         f"你刚才说：{prompt[:200]}"
     )
     for word in msg.split(" "):
@@ -108,24 +117,7 @@ def _mock_stream(prompt: str):
 @_login_required
 def chat_index():
     db = get_engine()
-    user_id = g.user["id"]
-    with get_conn() as conn, make_cursor(conn) as cur:
-        cur.execute(
-            """SELECT id FROM chat_sessions
-               WHERE user_id = %s
-               ORDER BY pinned DESC, updated_at DESC LIMIT 1""",
-            (user_id,),
-        )
-        row = cur.fetchone()
-    if row:
-        return redirect(url_for("chat.chat_session", session_id=row["id"]))
     new_id = str(uuid.uuid4())
-    with get_conn() as conn, make_cursor(conn) as cur:
-        cur.execute(
-            f"INSERT INTO chat_sessions (id, user_id, title, messages) VALUES (%s, %s, '新会话', {db.json_default_empty()})",
-            (new_id, user_id),
-        )
-        conn.commit()
     return redirect(url_for("chat.chat_session", session_id=new_id))
 
 
@@ -133,21 +125,7 @@ def chat_index():
 @_login_required
 def new_session():
     db = get_engine()
-    user_id = g.user["id"]
-    with get_conn() as conn, make_cursor(conn) as cur:
-        cur.execute(
-            f"SELECT id FROM chat_sessions WHERE user_id=%s AND {db.json_array_length("messages")}=0 LIMIT 1",
-            (user_id,),
-        )
-        row = cur.fetchone()
-        if row:
-            return redirect(url_for("chat.chat_session", session_id=row["id"]))
-        new_id = str(uuid.uuid4())
-        cur.execute(
-            f"INSERT INTO chat_sessions (id, user_id, title, messages) VALUES (%s, %s, '新会话', {db.json_default_empty()})",
-            (new_id, user_id),
-        )
-        conn.commit()
+    new_id = str(uuid.uuid4())
     return redirect(url_for("chat.chat_session", session_id=new_id))
 
 
@@ -157,7 +135,17 @@ def chat_session(session_id):
     db = get_engine()
     sess = _load_session(session_id, g.user["id"])
     if not sess:
-        abort(404)
+        # 虚拟新会话（尚未写入 DB，首次发消息时才写入）
+        return render_template(
+            "chat.html",
+            messages=[],
+            session_id=session_id,
+            session_title="新会话",
+            pinned=False,
+            model=current_app.config["LLM_MODEL"],
+            api_configured=bool(current_app.config["LLM_API_KEY"]),
+            current_session_id=session_id,
+        )
     messages = sess.get("messages") or []
     return render_template(
         "chat.html",
@@ -165,8 +153,8 @@ def chat_session(session_id):
         session_id=session_id,
         session_title=sess.get("title") or "新会话",
         pinned=bool(sess.get("pinned")),
-        model=current_app.config["MINIMAX_MODEL"],
-        api_configured=bool(current_app.config["MINIMAX_API_KEY"]),
+        model=sess.get("model") or current_app.config["LLM_MODEL"],
+        api_configured=bool(current_app.config["LLM_API_KEY"]),
         current_session_id=session_id,
     )
 
@@ -176,8 +164,19 @@ def chat_session(session_id):
 def chat_stream(session_id):
     db = get_engine()
     sess = _load_session(session_id, g.user["id"])
+    current_model = current_app.config["LLM_MODEL"]
     if not sess:
-        abort(404)
+        # 首次发消息：创建「草稿」session
+        user_id = g.user["id"]
+        with get_conn() as conn, make_cursor(conn) as cur:
+            cur.execute(
+                f"INSERT INTO chat_sessions (id, user_id, title, messages, model) VALUES (%s, %s, '新会话', {db.json_default_empty()}, %s)",
+                (session_id, user_id, current_model),
+            )
+            conn.commit()
+        sess = _load_session(session_id, user_id)
+    else:
+        _update_session_model(session_id, current_model)
 
     data = request.get_json(silent=True) or request.form.to_dict()
     prompt = (data.get("prompt") or "").strip()
@@ -197,9 +196,9 @@ def chat_stream(session_id):
     agno_messages = [{"role": m["role"], "content": m["content"]} for m in messages]
 
     cfg = {
-        "api_key": current_app.config["MINIMAX_API_KEY"],
-        "api_base": current_app.config["MINIMAX_API_BASE"],
-        "model": current_app.config["MINIMAX_MODEL"],
+        "api_key": current_app.config["LLM_API_KEY"],
+        "api_base": current_app.config["LLM_API_BASE"],
+        "model": current_model,
     }
 
     def generate():
@@ -213,14 +212,13 @@ def chat_stream(session_id):
                     except Exception:
                         pass
                     yield chunk
-            except GeneratorExit:
-                raise
+                else:
+                    yield "data: [DONE]\n\n"
             finally:
                 if full.strip():
                     messages.append({"role": "assistant", "content": full.strip(), "ts": _now_iso()})
                     _update_session_messages(session_id, messages)
                 _touch_session(session_id)
-            yield "data: [DONE]\n\n"
             return
 
         agent = _build_agent(cfg)
@@ -248,10 +246,10 @@ def chat_stream(session_id):
                 elif event.event == RunEvent.run_error:
                     err = getattr(event, "content", str(event))
                     yield f"data: {json.dumps({'error': str(err)}, ensure_ascii=False)}\n\n"
-        except GeneratorExit:
-            raise
         except Exception as e:
             yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
+        else:
+            yield "data: [DONE]\n\n"
         finally:
             import re as _re
             if full_response:
@@ -263,7 +261,6 @@ def chat_stream(session_id):
                 messages.append({"role": "assistant", "content": answer, "thinking": full_thinking, "ts": _now_iso()})
                 _update_session_messages(session_id, messages)
             _touch_session(session_id)
-            yield "data: [DONE]\n\n"
 
     return Response(generate(), mimetype="text/event-stream")
 
@@ -302,9 +299,10 @@ def pin_session(session_id):
     sess = _load_session(session_id, g.user["id"])
     if not sess:
         abort(404)
+    db = get_engine()
     with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute(
-            "UPDATE chat_sessions SET pinned = 1 - pinned WHERE id = %s",
+            f"UPDATE chat_sessions SET pinned = {db.bool_toggle('pinned')} WHERE id = %s",
             (session_id,),
         )
         conn.commit()

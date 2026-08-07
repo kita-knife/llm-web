@@ -151,6 +151,7 @@ def ensure_auth_schema():
                         title VARCHAR(200),
                         messages JSONB NOT NULL DEFAULT {db.json_default_empty()},
                         pinned BOOLEAN NOT NULL DEFAULT FALSE,
+                        model VARCHAR(100),
                         created_at TIMESTAMP NOT NULL DEFAULT {db.default_now()},
                         updated_at TIMESTAMP NOT NULL DEFAULT {db.default_now()}
                     )""")
@@ -174,12 +175,27 @@ def ensure_auth_schema():
                         title VARCHAR(200),
                         messages JSON NOT NULL,
                         pinned TINYINT(1) NOT NULL DEFAULT 0,
+                        model VARCHAR(100),
                         created_at DATETIME NOT NULL DEFAULT {db.default_now()},
                         updated_at DATETIME NOT NULL DEFAULT {db.default_now()}
                                      ON UPDATE CURRENT_TIMESTAMP,
                         INDEX idx_sessions_user_pinned (user_id, pinned DESC, updated_at DESC),
                         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                     ) {db.engine_clause()}""")
+
+        # ===== chat_sessions.model 列迁移 =====
+        if is_pg:
+            cur.execute(
+                "SELECT COUNT(*) AS n FROM information_schema.columns "
+                "WHERE table_catalog = current_database() AND table_name = 'chat_sessions' AND column_name = 'model'"
+            )
+        else:
+            cur.execute(
+                f"SELECT COUNT(*) AS n FROM information_schema.columns "
+                f"WHERE table_schema = {db.schema_name_query()} AND table_name = 'chat_sessions' AND column_name = 'model'"
+            )
+        if cur.fetchone()["n"] == 0:
+            cur.execute("ALTER TABLE chat_sessions ADD COLUMN model VARCHAR(100)")
 
         # ===== login_sessions =====
         cur.execute(
@@ -207,88 +223,6 @@ def ensure_auth_schema():
                         INDEX idx_ls_user (user_id),
                         INDEX idx_ls_expires (expires_at)
                     ) {db.engine_clause()}""")
-
-        conn.commit()
-
-
-        # ===== chat_sessions =====
-        cur.execute(
-            f"SELECT COUNT(*) AS n FROM information_schema.tables "
-            f"WHERE table_schema = {db.schema_name_query()} AND table_name = 'chat_sessions'"
-        )
-        if cur.fetchone()["n"] == 0:
-            if is_pg:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS chat_sessions (
-                        id VARCHAR(36) PRIMARY KEY,
-                        user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                        title VARCHAR(200),
-                        messages JSONB NOT NULL DEFAULT '[]'::jsonb,
-                        pinned BOOLEAN NOT NULL DEFAULT FALSE,
-                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-                        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
-                    )""")
-                cur.execute(
-                    "CREATE OR REPLACE FUNCTION update_updated_at() "
-                    "RETURNS TRIGGER AS $BODY$ "
-                    "BEGIN NEW.updated_at = NOW(); RETURN NEW; END; "
-                    "$BODY$ LANGUAGE plpgsql"
-                )
-                cur.execute(
-                    "DROP TRIGGER IF EXISTS chat_sessions_updated_at ON chat_sessions"
-                )
-                cur.execute(
-                    "CREATE TRIGGER chat_sessions_updated_at "
-                    "BEFORE UPDATE ON chat_sessions "
-                    "FOR EACH ROW EXECUTE FUNCTION update_updated_at()"
-                )
-            else:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS chat_sessions (
-                        id VARCHAR(36) PRIMARY KEY,
-                        user_id INT NOT NULL,
-                        title VARCHAR(200),
-                        messages JSON NOT NULL,
-                        pinned TINYINT(1) NOT NULL DEFAULT 0,
-                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-                                     ON UPDATE CURRENT_TIMESTAMP,
-                        INDEX idx_sessions_user_pinned (user_id, pinned DESC, updated_at DESC),
-                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
-
-        # ===== login_sessions =====
-        cur.execute(
-            f"SELECT COUNT(*) AS n FROM information_schema.tables "
-            f"WHERE table_schema = {db.schema_name_query()} AND table_name = 'login_sessions'"
-        )
-        if cur.fetchone()["n"] == 0:
-            if is_pg:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS login_sessions (
-                        sid VARCHAR(64) PRIMARY KEY,
-                        user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-                        expires_at TIMESTAMP NOT NULL
-                    )""")
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_login_sessions_user "
-                    "ON login_sessions(user_id)"
-                )
-                cur.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_login_sessions_expires "
-                    "ON login_sessions(expires_at)"
-                )
-            else:
-                cur.execute("""
-                    CREATE TABLE IF NOT EXISTS login_sessions (
-                        sid VARCHAR(64) PRIMARY KEY,
-                        user_id INT NOT NULL,
-                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                        expires_at DATETIME NOT NULL,
-                        INDEX idx_login_sessions_user (user_id),
-                        INDEX idx_login_sessions_expires (expires_at)
-                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
 
         conn.commit()
 

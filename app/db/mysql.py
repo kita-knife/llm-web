@@ -46,6 +46,9 @@ class MySQLEngine(DatabaseEngine):
     def schema_name_query(self) -> str:
         return "DATABASE()"
 
+    def bool_toggle(self, col: str) -> str:
+        return f"1 - {col}"
+
     # ── 错误类 ──
     @property
     def integrity_error(self):

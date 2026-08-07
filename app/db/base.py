@@ -55,6 +55,10 @@ class DatabaseEngine(ABC):
     def schema_name_query(self) -> str:
         """查询当前 database / schema 名的 SQL 表达式。"""
 
+    @abstractmethod
+    def bool_toggle(self, col: str) -> str:
+        """布尔列取反 SQL 表达式。"""
+
     # ── 错误类 ──
     @property
     @abstractmethod
