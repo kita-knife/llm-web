@@ -5,7 +5,7 @@ from flask import Flask, g, jsonify, render_template, request
 
 from .config import get_config
 from .csrf import check_csrf, generate_csrf
-from .db import init_db_pool
+from .db import set_db_config, init_engine
 from .extensions import limiter
 from .session import clear_expired_sessions, load_session
 
@@ -21,7 +21,14 @@ def create_app(config_class=None):
     app.config["RATELIMIT_DEFAULT"] = "200/hour"
 
     with app.app_context():
-        init_db_pool()
+        set_db_config(
+            host=app.config["DB_HOST"],
+            port=app.config["DB_PORT"],
+            user=app.config["DB_USER"],
+            password=app.config["DB_PASSWORD"],
+            database=app.config["DB_NAME"],
+        )
+        init_engine(app.config["DB_TYPE"])
         ensure_auth_schema()
 
     from .blueprints.pages import bp as pages_bp
@@ -61,14 +68,15 @@ def create_app(config_class=None):
     @app.context_processor
     def inject_chat_sessions():
         from flask import request
-        from .db import get_conn
+        from .db import get_engine, get_conn, make_cursor
         if not g.get("user") or not request.path.startswith("/chat"):
             return {"chat_sessions": []}
-        with get_conn() as conn, conn.cursor() as cur:
+        db = get_engine()
+        with get_conn() as conn, make_cursor(conn) as cur:
             cur.execute(
-                """SELECT id, title, messages, pinned, updated_at
+                f"""SELECT id, title, messages, pinned, updated_at
                    FROM chat_sessions
-                   WHERE user_id = %s AND JSON_LENGTH(messages) > 0
+                   WHERE user_id = %s AND {db.json_array_length('messages')} > 0
                    ORDER BY pinned DESC, updated_at DESC LIMIT 30""",
                 (g.user["id"],),
             )
@@ -112,157 +120,176 @@ def create_app(config_class=None):
 
 
 def ensure_auth_schema():
-    from .db import get_conn
+    """幂等地确保 schema 完整（MySQL/PostgreSQL 双兼容）。"""
+    from .db import get_engine, get_conn, make_cursor
+    db = get_engine()
 
-    with get_conn() as conn, conn.cursor() as cur:
+    with get_conn() as conn, make_cursor(conn) as cur:
+        # ===== users =====
+        cur.execute(f"""
+            CREATE TABLE IF NOT EXISTS users (
+                id {db.auto_pk()},
+                name VARCHAR(50) NOT NULL UNIQUE,
+                password_hash VARCHAR(255),
+                role {db.role_ddl()},
+                created_at TIMESTAMP NOT NULL DEFAULT {db.default_now()}
+            ) {db.engine_clause()}""")
+
+        # ===== chat_sessions =====
+        from .db.postgres import PostgresEngine
+        is_pg = isinstance(db, PostgresEngine)
         cur.execute(
-            """
-            SELECT COUNT(*) AS n FROM information_schema.columns
-            WHERE table_schema = DATABASE()
-              AND table_name = 'users'
-              AND column_name = 'password_hash'
-            """
+            f"SELECT COUNT(*) AS n FROM information_schema.tables "
+            f"WHERE table_schema = {db.schema_name_query()} AND table_name = 'chat_sessions'"
         )
         if cur.fetchone()["n"] == 0:
-            cur.execute(
-                "ALTER TABLE users ADD COLUMN password_hash VARCHAR(255) NULL AFTER city"
-            )
-
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS login_sessions (
-                sid VARCHAR(64) PRIMARY KEY,
-                user_id INT NOT NULL,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                expires_at DATETIME NOT NULL,
-                INDEX idx_login_sessions_user (user_id),
-                INDEX idx_login_sessions_expires (expires_at)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """
-        )
-
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS chat_sessions (
-                id VARCHAR(36) PRIMARY KEY,
-                user_id INT NOT NULL,
-                title VARCHAR(200),
-                messages JSON NOT NULL,
-                pinned TINYINT(1) NOT NULL DEFAULT 0,
-                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-                             ON UPDATE CURRENT_TIMESTAMP,
-                CONSTRAINT fk_session_user FOREIGN KEY (user_id)
-                    REFERENCES users(id) ON DELETE CASCADE,
-                INDEX idx_sessions_user_pinned_updated (user_id, pinned DESC, updated_at DESC)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """
-        )
-
-        cur.execute(
-            """
-            SELECT COUNT(*) AS n FROM information_schema.columns
-            WHERE table_schema = DATABASE()
-              AND table_name = 'chat_sessions'
-              AND column_name = 'messages'
-            """
-        )
-        if cur.fetchone()["n"] == 0:
-            cur.execute("DROP TABLE IF EXISTS chat_messages")
-            cur.execute("DROP TABLE chat_sessions")
-            cur.execute(
-                """
-                CREATE TABLE chat_sessions (
-                    id VARCHAR(36) PRIMARY KEY,
-                    user_id INT NOT NULL,
-                    title VARCHAR(200),
-                    messages JSON NOT NULL,
-                    pinned TINYINT(1) NOT NULL DEFAULT 0,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-                                 ON UPDATE CURRENT_TIMESTAMP,
-                    CONSTRAINT fk_session_user FOREIGN KEY (user_id)
-                        REFERENCES users(id) ON DELETE CASCADE,
-                    INDEX idx_sessions_user_pinned_updated (user_id, pinned DESC, updated_at DESC)
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-                """
-            )
-
-        cur.execute(
-            """
-            SELECT name, COUNT(*) AS c FROM users
-            GROUP BY name HAVING c > 1
-            """
-        )
-        dups = cur.fetchall()
-        if dups:
-            names = ", ".join(f"{r['name']}(×{r['c']})" for r in dups)
-            raise RuntimeError(
-                f"users 表存在重名，无法添加 UNIQUE 约束：{names}。"
-                "请手动去重后再启动。"
-            )
-
-        cur.execute(
-            """
-            SELECT COUNT(*) AS n FROM information_schema.statistics
-            WHERE table_schema = DATABASE()
-              AND table_name = 'users'
-              AND index_name = 'name'
-            """
-        )
-        if cur.fetchone()["n"] == 0:
-            cur.execute("ALTER TABLE users ADD UNIQUE (name)")
-
-        # role 列：三级权限
-        cur.execute(
-            """
-            SELECT COUNT(*) AS n FROM information_schema.columns
-            WHERE table_schema = DATABASE()
-              AND table_name = 'users'
-              AND column_name = 'role'
-            """
-        )
-        if cur.fetchone()["n"] == 0:
-            cur.execute(
-                "ALTER TABLE users ADD COLUMN role ENUM('root','admin','user') NOT NULL DEFAULT 'user' AFTER password_hash"
-            )
-
-        # drop age / city
-        cur.execute(
-            """
-            SELECT COUNT(*) AS n FROM information_schema.columns
-            WHERE table_schema = DATABASE()
-              AND table_name = 'users'
-              AND column_name = 'age'
-            """
-        )
-        if cur.fetchone()["n"] > 0:
-            cur.execute("ALTER TABLE users DROP COLUMN age")
-        cur.execute(
-            """
-            SELECT COUNT(*) AS n FROM information_schema.columns
-            WHERE table_schema = DATABASE()
-              AND table_name = 'users'
-              AND column_name = 'city'
-            """
-        )
-        if cur.fetchone()["n"] > 0:
-            cur.execute("ALTER TABLE users DROP COLUMN city")
-
-        # bootstrap：如果还没有 root，把第一个有密码的用户提升为 root
-        cur.execute("SELECT COUNT(*) AS n FROM users WHERE role='root'")
-        if cur.fetchone()["n"] == 0:
-            cur.execute(
-                """
-                UPDATE users SET role='root'
-                WHERE id = (
-                    SELECT id FROM (
-                        SELECT id FROM users
-                        WHERE password_hash IS NOT NULL
-                        ORDER BY id LIMIT 1
-                    ) t
+            if is_pg:
+                cur.execute(f"""
+                    CREATE TABLE IF NOT EXISTS chat_sessions (
+                        id VARCHAR(36) PRIMARY KEY,
+                        user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        title VARCHAR(200),
+                        messages JSONB NOT NULL DEFAULT {db.json_default_empty()},
+                        pinned BOOLEAN NOT NULL DEFAULT FALSE,
+                        created_at TIMESTAMP NOT NULL DEFAULT {db.default_now()},
+                        updated_at TIMESTAMP NOT NULL DEFAULT {db.default_now()}
+                    )""")
+                cur.execute(
+                    "CREATE OR REPLACE FUNCTION update_updated_at() "
+                    "RETURNS TRIGGER AS $BODY$ "
+                    "BEGIN NEW.updated_at = NOW(); RETURN NEW; END; "
+                    "$BODY$ LANGUAGE plpgsql"
                 )
-                """
-            )
+                cur.execute("DROP TRIGGER IF EXISTS chat_sessions_updated_at ON chat_sessions")
+                cur.execute(
+                    "CREATE TRIGGER chat_sessions_updated_at "
+                    "BEFORE UPDATE ON chat_sessions "
+                    "FOR EACH ROW EXECUTE FUNCTION update_updated_at()"
+                )
+            else:
+                cur.execute(f"""
+                    CREATE TABLE IF NOT EXISTS chat_sessions (
+                        id VARCHAR(36) PRIMARY KEY,
+                        user_id INT NOT NULL,
+                        title VARCHAR(200),
+                        messages JSON NOT NULL,
+                        pinned TINYINT(1) NOT NULL DEFAULT 0,
+                        created_at DATETIME NOT NULL DEFAULT {db.default_now()},
+                        updated_at DATETIME NOT NULL DEFAULT {db.default_now()}
+                                     ON UPDATE CURRENT_TIMESTAMP,
+                        INDEX idx_sessions_user_pinned (user_id, pinned DESC, updated_at DESC),
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    ) {db.engine_clause()}""")
+
+        # ===== login_sessions =====
+        cur.execute(
+            f"SELECT COUNT(*) AS n FROM information_schema.tables "
+            f"WHERE table_schema = {db.schema_name_query()} AND table_name = 'login_sessions'"
+        )
+        if cur.fetchone()["n"] == 0:
+            if is_pg:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS login_sessions (
+                        sid VARCHAR(64) PRIMARY KEY,
+                        user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        expires_at TIMESTAMP NOT NULL
+                    )""")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_ls_user ON login_sessions(user_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_ls_expires ON login_sessions(expires_at)")
+            else:
+                cur.execute(f"""
+                    CREATE TABLE IF NOT EXISTS login_sessions (
+                        sid VARCHAR(64) PRIMARY KEY,
+                        user_id INT NOT NULL,
+                        created_at DATETIME NOT NULL DEFAULT {db.default_now()},
+                        expires_at DATETIME NOT NULL,
+                        INDEX idx_ls_user (user_id),
+                        INDEX idx_ls_expires (expires_at)
+                    ) {db.engine_clause()}""")
 
         conn.commit()
+
+
+        # ===== chat_sessions =====
+        cur.execute(
+            f"SELECT COUNT(*) AS n FROM information_schema.tables "
+            f"WHERE table_schema = {db.schema_name_query()} AND table_name = 'chat_sessions'"
+        )
+        if cur.fetchone()["n"] == 0:
+            if is_pg:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS chat_sessions (
+                        id VARCHAR(36) PRIMARY KEY,
+                        user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        title VARCHAR(200),
+                        messages JSONB NOT NULL DEFAULT '[]'::jsonb,
+                        pinned BOOLEAN NOT NULL DEFAULT FALSE,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+                    )""")
+                cur.execute(
+                    "CREATE OR REPLACE FUNCTION update_updated_at() "
+                    "RETURNS TRIGGER AS $BODY$ "
+                    "BEGIN NEW.updated_at = NOW(); RETURN NEW; END; "
+                    "$BODY$ LANGUAGE plpgsql"
+                )
+                cur.execute(
+                    "DROP TRIGGER IF EXISTS chat_sessions_updated_at ON chat_sessions"
+                )
+                cur.execute(
+                    "CREATE TRIGGER chat_sessions_updated_at "
+                    "BEFORE UPDATE ON chat_sessions "
+                    "FOR EACH ROW EXECUTE FUNCTION update_updated_at()"
+                )
+            else:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS chat_sessions (
+                        id VARCHAR(36) PRIMARY KEY,
+                        user_id INT NOT NULL,
+                        title VARCHAR(200),
+                        messages JSON NOT NULL,
+                        pinned TINYINT(1) NOT NULL DEFAULT 0,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                     ON UPDATE CURRENT_TIMESTAMP,
+                        INDEX idx_sessions_user_pinned (user_id, pinned DESC, updated_at DESC),
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+
+        # ===== login_sessions =====
+        cur.execute(
+            f"SELECT COUNT(*) AS n FROM information_schema.tables "
+            f"WHERE table_schema = {db.schema_name_query()} AND table_name = 'login_sessions'"
+        )
+        if cur.fetchone()["n"] == 0:
+            if is_pg:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS login_sessions (
+                        sid VARCHAR(64) PRIMARY KEY,
+                        user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        expires_at TIMESTAMP NOT NULL
+                    )""")
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_login_sessions_user "
+                    "ON login_sessions(user_id)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_login_sessions_expires "
+                    "ON login_sessions(expires_at)"
+                )
+            else:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS login_sessions (
+                        sid VARCHAR(64) PRIMARY KEY,
+                        user_id INT NOT NULL,
+                        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        expires_at DATETIME NOT NULL,
+                        INDEX idx_login_sessions_user (user_id),
+                        INDEX idx_login_sessions_expires (expires_at)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+
+        conn.commit()
+
+

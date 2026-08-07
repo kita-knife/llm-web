@@ -12,6 +12,7 @@ class BaseConfig:
     DB_USER = os.getenv("DB_USER", "appuser")
     DB_PASSWORD = os.getenv("DB_PASSWORD", "")
     DB_NAME = os.getenv("DB_NAME", "web_test1")
+    DB_TYPE = os.getenv("DB_TYPE", "mysql").lower()
     DEBUG = False
     JSON_AS_ASCII = False
     MINIMAX_API_BASE = os.getenv("MINIMAX_API_BASE", "https://api.minimax.chat/v1")

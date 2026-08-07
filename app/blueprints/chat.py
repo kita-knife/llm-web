@@ -17,7 +17,7 @@ from flask import (
     url_for,
 )
 
-from ..db import get_conn
+from ..db import get_conn, make_cursor, get_engine
 from .chat_tools import get_current_time
 
 bp = Blueprint("chat", __name__)
@@ -39,7 +39,7 @@ def _now_iso():
 
 
 def _load_session(session_id: str, user_id: int):
-    with get_conn() as conn, conn.cursor() as cur:
+    with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute(
             """SELECT id, user_id, title, messages, pinned, created_at, updated_at
                FROM chat_sessions WHERE id=%s AND user_id=%s""",
@@ -55,7 +55,7 @@ def _load_session(session_id: str, user_id: int):
 
 
 def _touch_session(session_id: str):
-    with get_conn() as conn, conn.cursor() as cur:
+    with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute(
             "UPDATE chat_sessions SET updated_at = NOW() WHERE id = %s",
             (session_id,),
@@ -64,7 +64,7 @@ def _touch_session(session_id: str):
 
 
 def _update_session_title(session_id: str, title: str):
-    with get_conn() as conn, conn.cursor() as cur:
+    with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute(
             "UPDATE chat_sessions SET title = %s WHERE id = %s",
             (title, session_id),
@@ -73,9 +73,10 @@ def _update_session_title(session_id: str, title: str):
 
 
 def _update_session_messages(session_id: str, messages: list):
-    with get_conn() as conn, conn.cursor() as cur:
+    db = get_engine()
+    with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute(
-            "UPDATE chat_sessions SET messages = %s WHERE id = %s",
+            f"UPDATE chat_sessions SET messages = %s{db.json_cast_param()} WHERE id = %s",
             (json.dumps(messages, ensure_ascii=False), session_id),
         )
         conn.commit()
@@ -106,8 +107,9 @@ def _mock_stream(prompt: str):
 @bp.route("/chat")
 @_login_required
 def chat_index():
+    db = get_engine()
     user_id = g.user["id"]
-    with get_conn() as conn, conn.cursor() as cur:
+    with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute(
             """SELECT id FROM chat_sessions
                WHERE user_id = %s
@@ -118,9 +120,9 @@ def chat_index():
     if row:
         return redirect(url_for("chat.chat_session", session_id=row["id"]))
     new_id = str(uuid.uuid4())
-    with get_conn() as conn, conn.cursor() as cur:
+    with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute(
-            "INSERT INTO chat_sessions (id, user_id, title, messages) VALUES (%s, %s, '新会话', JSON_ARRAY())",
+            f"INSERT INTO chat_sessions (id, user_id, title, messages) VALUES (%s, %s, '新会话', {db.json_default_empty()})",
             (new_id, user_id),
         )
         conn.commit()
@@ -130,10 +132,11 @@ def chat_index():
 @bp.route("/chat/new", methods=["POST"])
 @_login_required
 def new_session():
+    db = get_engine()
     user_id = g.user["id"]
-    with get_conn() as conn, conn.cursor() as cur:
+    with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute(
-            "SELECT id FROM chat_sessions WHERE user_id=%s AND JSON_LENGTH(messages)=0 LIMIT 1",
+            f"SELECT id FROM chat_sessions WHERE user_id=%s AND {db.json_array_length("messages")}=0 LIMIT 1",
             (user_id,),
         )
         row = cur.fetchone()
@@ -141,7 +144,7 @@ def new_session():
             return redirect(url_for("chat.chat_session", session_id=row["id"]))
         new_id = str(uuid.uuid4())
         cur.execute(
-            "INSERT INTO chat_sessions (id, user_id, title, messages) VALUES (%s, %s, '新会话', JSON_ARRAY())",
+            f"INSERT INTO chat_sessions (id, user_id, title, messages) VALUES (%s, %s, '新会话', {db.json_default_empty()})",
             (new_id, user_id),
         )
         conn.commit()
@@ -151,6 +154,7 @@ def new_session():
 @bp.route("/chat/<session_id>", methods=["GET"])
 @_login_required
 def chat_session(session_id):
+    db = get_engine()
     sess = _load_session(session_id, g.user["id"])
     if not sess:
         abort(404)
@@ -170,6 +174,7 @@ def chat_session(session_id):
 @bp.route("/chat/<session_id>/stream", methods=["POST"])
 @_login_required
 def chat_stream(session_id):
+    db = get_engine()
     sess = _load_session(session_id, g.user["id"])
     if not sess:
         abort(404)
@@ -266,10 +271,11 @@ def chat_stream(session_id):
 @bp.route("/chat/<session_id>/delete", methods=["POST"])
 @_login_required
 def delete_session(session_id):
+    db = get_engine()
     sess = _load_session(session_id, g.user["id"])
     if not sess:
         abort(404)
-    with get_conn() as conn, conn.cursor() as cur:
+    with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute("DELETE FROM chat_sessions WHERE id = %s", (session_id,))
         conn.commit()
     return redirect(url_for("chat.chat_index"))
@@ -278,6 +284,7 @@ def delete_session(session_id):
 @bp.route("/chat/<session_id>/rename", methods=["POST"])
 @_login_required
 def rename_session(session_id):
+    db = get_engine()
     sess = _load_session(session_id, g.user["id"])
     if not sess:
         abort(404)
@@ -291,10 +298,11 @@ def rename_session(session_id):
 @bp.route("/chat/<session_id>/pin", methods=["POST"])
 @_login_required
 def pin_session(session_id):
+    db = get_engine()
     sess = _load_session(session_id, g.user["id"])
     if not sess:
         abort(404)
-    with get_conn() as conn, conn.cursor() as cur:
+    with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute(
             "UPDATE chat_sessions SET pinned = 1 - pinned WHERE id = %s",
             (session_id,),

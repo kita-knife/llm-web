@@ -1,9 +1,8 @@
 from functools import wraps
 
 from flask import Blueprint, g, jsonify, request
-from pymysql.err import IntegrityError
 
-from ..db import get_conn
+from ..db import get_conn, make_cursor, get_engine
 from .pages import VALID_ROLES, _can_change_role, _can_create_role, _can_manage, count_roots
 
 bp = Blueprint("users", __name__)
@@ -23,7 +22,7 @@ def _role_required(*allowed):
 
 
 def _load_user(user_id: int):
-    with get_conn() as conn, conn.cursor() as cur:
+    with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute("SELECT id, name, role FROM users WHERE id = %s", (user_id,))
         return cur.fetchone()
 
@@ -32,7 +31,7 @@ def _load_user(user_id: int):
 @_role_required("admin", "root")
 def list_users():
     try:
-        with get_conn() as conn, conn.cursor() as cur:
+        with get_conn() as conn, make_cursor(conn) as cur:
             cur.execute("SELECT id, name, role FROM users ORDER BY id")
             rows = cur.fetchall()
         return jsonify(rows)
@@ -64,6 +63,7 @@ def get_user(user_id):
 @bp.route("/<int:user_id>", methods=["PUT"])
 @_role_required("admin", "root")
 def update_user(user_id):
+    db = get_engine()
     me = g.user
     target = _load_user(user_id)
     if target is None:
@@ -99,7 +99,7 @@ def update_user(user_id):
 
     values.append(user_id)
     try:
-        with get_conn() as conn, conn.cursor() as cur:
+        with get_conn() as conn, make_cursor(conn) as cur:
             cur.execute(
                 f"UPDATE users SET {', '.join(fields)} WHERE id = %s", values
             )
@@ -112,7 +112,7 @@ def update_user(user_id):
             )
             row = cur.fetchone()
         return jsonify(row)
-    except IntegrityError:
+    except db.integrity_error:
         return jsonify({"error": "name already exists"}), 409
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -133,7 +133,7 @@ def delete_user(user_id):
     if target["role"] == "root" and count_roots() <= 1:
         return jsonify({"error": "至少保留一个 root"}), 400
     try:
-        with get_conn() as conn, conn.cursor() as cur:
+        with get_conn() as conn, make_cursor(conn) as cur:
             cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
             if cur.rowcount == 0:
                 conn.rollback()

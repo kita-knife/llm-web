@@ -10,10 +10,9 @@ from flask import (
     request,
     url_for,
 )
-from pymysql.err import IntegrityError
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from ..db import get_conn
+from ..db import get_conn, make_cursor, get_engine
 from ..extensions import limiter
 from ..session import (
     SESSION_COOKIE,
@@ -52,7 +51,7 @@ def role_required(*allowed_roles):
 def verify_credentials(name: str, password: str):
     if not name or not password:
         return None
-    with get_conn() as conn, conn.cursor() as cur:
+    with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute(
             "SELECT id, name, role, password_hash FROM users WHERE name = %s",
             (name,),
@@ -66,7 +65,7 @@ def verify_credentials(name: str, password: str):
 
 
 def change_password(user_id: int, old_pwd: str, new_pwd: str, keep_sid: str | None = None):
-    with get_conn() as conn, conn.cursor() as cur:
+    with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute("SELECT password_hash FROM users WHERE id = %s", (user_id,))
         row = cur.fetchone()
         if not row or not row["password_hash"]:
@@ -92,13 +91,13 @@ def change_password(user_id: int, old_pwd: str, new_pwd: str, keep_sid: str | No
 
 
 def load_user(user_id: int):
-    with get_conn() as conn, conn.cursor() as cur:
+    with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute("SELECT id, name, role FROM users WHERE id = %s", (user_id,))
         return cur.fetchone()
 
 
 def count_roots() -> int:
-    with get_conn() as conn, conn.cursor() as cur:
+    with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute("SELECT COUNT(*) AS n FROM users WHERE role='root'")
         return cur.fetchone()["n"]
 
@@ -188,6 +187,7 @@ def login():
 @limiter.limit("3/hour", methods=["POST"])
 def register():
     """公开注册：只能创建 'user' 角色。"""
+    db = get_engine()
     error = None
     form = {"name": ""}
     if request.method == "POST":
@@ -200,15 +200,12 @@ def register():
             error = "密码至少 4 位"
         if not error:
             try:
-                with get_conn() as conn, conn.cursor() as cur:
-                    cur.execute(
-                        """INSERT INTO users (name, password_hash, role)
-                           VALUES (%s, %s, 'user')""",
-                        (name, generate_password_hash(password)),
-                    )
+                with get_conn() as conn, make_cursor(conn) as cur:
+                    new_id = db.insert_with_id(cur, "users",
+                                               ["name", "password_hash", "role"],
+                                               [name, generate_password_hash(password), "user"])
                     conn.commit()
-                    new_id = cur.lastrowid
-            except IntegrityError:
+            except db.integrity_error:
                 error = "用户名已存在"
             except Exception as e:
                 error = f"数据库错误：{e}"
@@ -224,7 +221,7 @@ def register():
 @bp.route("/users", methods=["GET"])
 @role_required("admin", "root")
 def users_list():
-    with get_conn() as conn, conn.cursor() as cur:
+    with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute("SELECT id, name, role FROM users ORDER BY id")
         users = cur.fetchall()
     me_id = g.user["id"]
@@ -247,6 +244,7 @@ def users_list():
 @bp.route("/users/new", methods=["GET", "POST"], strict_slashes=False)
 @role_required("admin", "root")
 def users_new():
+    db = get_engine()
     me = g.user
     available_roles = ("admin", "user") if me["role"] == "admin" else VALID_ROLES
     error = None
@@ -269,14 +267,14 @@ def users_new():
             error = "两次密码输入不一致"
         else:
             try:
-                with get_conn() as conn, conn.cursor() as cur:
+                with get_conn() as conn, make_cursor(conn) as cur:
                     cur.execute(
                         """INSERT INTO users (name, password_hash, role)
                            VALUES (%s, %s, %s)""",
                         (name, generate_password_hash(password), role),
                     )
                     conn.commit()
-            except IntegrityError:
+            except db.integrity_error:
                 error = "用户名已存在"
             except Exception as e:
                 error = f"数据库错误：{e}"
@@ -293,6 +291,7 @@ def users_new():
 @bp.route("/users/<int:user_id>/edit", methods=["GET", "POST"], strict_slashes=False)
 @login_required
 def users_edit(user_id):
+    db = get_engine()
     me = g.user
     target = load_user(user_id)
     if not target:
@@ -342,7 +341,7 @@ def users_edit(user_id):
             error = "至少保留一个 root"
         else:
             try:
-                with get_conn() as conn, conn.cursor() as cur:
+                with get_conn() as conn, make_cursor(conn) as cur:
                     # user 自己改只能改 name（不能改 role）
                     if me["role"] == "user":
                         cur.execute(
@@ -358,7 +357,7 @@ def users_edit(user_id):
                         conn.rollback()
                         abort(404)
                     conn.commit()
-            except IntegrityError:
+            except db.integrity_error:
                 error = "用户名已存在"
             except Exception as e:
                 error = f"数据库错误：{e}"
@@ -389,7 +388,7 @@ def users_delete(user_id):
         abort(403, description=reason)
     if target["role"] == "root" and count_roots() <= 1:
         abort(400, description="至少保留一个 root")
-    with get_conn() as conn, conn.cursor() as cur:
+    with get_conn() as conn, make_cursor(conn) as cur:
         cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
         if cur.rowcount == 0:
             conn.rollback()
@@ -402,6 +401,7 @@ def users_delete(user_id):
 @bp.route("/profile", methods=["GET", "POST"])
 @login_required
 def profile():
+    db = get_engine()
     user = g.user
     error = None
     pwd_error = None
@@ -413,7 +413,7 @@ def profile():
                 error = "用户名必填"
             else:
                 try:
-                    with get_conn() as conn, conn.cursor() as cur:
+                    with get_conn() as conn, make_cursor(conn) as cur:
                         cur.execute(
                             "UPDATE users SET name=%s WHERE id=%s",
                             (name, user["id"]),
@@ -428,7 +428,7 @@ def profile():
                     user = new
                     flash("资料已更新", "success")
                     return redirect(url_for("pages.profile"))
-                except IntegrityError:
+                except db.integrity_error:
                     error = "用户名已存在"
                 except Exception as e:
                     error = f"数据库错误：{e}"

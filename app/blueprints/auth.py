@@ -1,8 +1,7 @@
 from flask import Blueprint, g, jsonify, make_response, request
-from pymysql.err import IntegrityError
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from ..db import get_conn
+from ..db import get_conn, make_cursor, get_engine
 from ..extensions import limiter
 from ..session import SESSION_COOKIE, SESSION_LIFETIME_DAYS, create_session, destroy_session
 
@@ -13,6 +12,7 @@ bp = Blueprint("auth", __name__)
 @limiter.limit("5/hour")
 def register():
     """API 注册：只能创建 'user' 角色。"""
+    db = get_engine()
     data = request.get_json(silent=True) or request.form.to_dict()
     try:
         name = data["name"]
@@ -23,15 +23,12 @@ def register():
         return jsonify({"error": "password too short (>=4 chars)"}), 400
     pwd_hash = generate_password_hash(password)
     try:
-        with get_conn() as conn, conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO users (name, password_hash, role)
-                   VALUES (%s, %s, 'user')""",
-                (name, pwd_hash),
-            )
+        with get_conn() as conn, make_cursor(conn) as cur:
+            new_id = db.insert_with_id(cur, "users",
+                                       ["name", "password_hash", "role"],
+                                       [name, pwd_hash, "user"])
             conn.commit()
-            new_id = cur.lastrowid
-    except IntegrityError:
+    except db.integrity_error:
         return jsonify({"error": "name already exists"}), 409
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -50,7 +47,7 @@ def login():
     if not name or not password:
         return jsonify({"error": "name and password required"}), 400
     try:
-        with get_conn() as conn, conn.cursor() as cur:
+        with get_conn() as conn, make_cursor(conn) as cur:
             cur.execute(
                 """SELECT id, name, role, password_hash
                    FROM users WHERE name = %s""",

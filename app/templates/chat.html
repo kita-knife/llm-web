@@ -181,6 +181,13 @@
   let lastUserPrompt = null;
 
   async function send(prompt, isRegen = false) {
+    // 手动输入时也关闭卡片，显示聊天区
+    const promptsContainer = document.querySelector('.chat-prompts');
+    if (promptsContainer) promptsContainer.remove();
+    if (history.classList.contains('chat-empty')) {
+      history.classList.remove('chat-empty');
+    }
+
     if (!isRegen) {
       const userEls = appendBubble('user');
       userEls.contentEl.innerHTML = md(prompt);

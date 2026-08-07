@@ -1,6 +1,6 @@
 from flask import Blueprint, jsonify
 
-from ..db import get_conn
+from ..db import get_conn, make_cursor, get_engine
 
 bp = Blueprint("db_check", __name__)
 
@@ -8,7 +8,7 @@ bp = Blueprint("db_check", __name__)
 @bp.route("/api/db-check")
 def db_check():
     try:
-        with get_conn() as conn, conn.cursor() as cur:
+        with get_conn() as conn, make_cursor(conn) as cur:
             cur.execute("SELECT VERSION() AS v, NOW() AS t")
             row = cur.fetchone()
         return jsonify(
