@@ -14,11 +14,13 @@
       {% endif %}
     </p>
   </div>
+  {% if messages %}
   <form method="POST" action="{{ url_for('chat.delete_session', session_id=session_id) }}"
     data-confirm="确定删除这个会话？">
     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
     <button type="submit" class="btn btn-danger btn-sm">删除会话</button>
   </form>
+  {% endif %}
 </div>
 
 {% if not messages %}
