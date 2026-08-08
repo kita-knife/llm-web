@@ -443,6 +443,30 @@ h2 { margin-top: 24px; border-bottom: 1px solid var(--border); padding-bottom: 4
 .inline-form { display: inline; }
 
 .hint { color: var(--muted-text); font-size: 0.9em; margin-top: 16px; transition: color 0.2s; }
+.hint { margin-top: 4px; font-size: 0.8em; }
+
+/* 在线状态指示器 */
+.online-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+.online-dot.online { background: #16a34a; }
+.online-dot.offline { background: #cbd5e1; }
+
+/* 踢下线按钮（黄色警告） */
+.btn-warning {
+  background: #f59e0b;
+  color: #fff;
+  border-color: #f59e0b;
+}
+.btn-warning:hover {
+  background: #d97706;
+  border-color: #d97706;
+}
 
 .chat-history {
   max-height: 500px;

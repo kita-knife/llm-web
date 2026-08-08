@@ -48,6 +48,19 @@ def load_session():
             "name": row["name"],
             "role": row["role"],
         }
+        # 节流更新 last_active_at（最近 1 分钟内不重复写）
+        with get_conn() as conn, make_cursor(conn) as cur:
+            cur.execute(
+                f"""
+                UPDATE login_sessions
+                   SET last_active_at = {db.now_utc()}
+                 WHERE sid = %s
+                   AND (last_active_at IS NULL
+                        OR last_active_at < {db.now_utc()} - INTERVAL '1 minute')
+                """,
+                (sid,),
+            )
+            conn.commit()
 
 
 def destroy_session(sid: str):

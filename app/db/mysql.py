@@ -34,6 +34,9 @@ class MySQLEngine(DatabaseEngine):
     def role_ddl(self) -> str:
         return "ENUM('root','admin','user') NOT NULL DEFAULT 'user'"
 
+    def last_active_ddl(self) -> str:
+        return "DATETIME"
+
     def auto_pk(self) -> str:
         return "INT AUTO_INCREMENT PRIMARY KEY"
 

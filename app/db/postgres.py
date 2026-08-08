@@ -34,6 +34,9 @@ class PostgresEngine(DatabaseEngine):
         return ("VARCHAR(16) NOT NULL DEFAULT 'user' "
                 "CHECK (role IN ('root','admin','user'))")
 
+    def last_active_ddl(self) -> str:
+        return "TIMESTAMP"
+
     def auto_pk(self) -> str:
         return "SERIAL PRIMARY KEY"
 

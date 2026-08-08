@@ -3,12 +3,19 @@
 {% block content %}
 <div class="page-header">
   <h1>用户管理</h1>
-  <a class="btn btn-primary" href="{{ url_for('pages.users_new') }}">+新建用户</a>
+  <div>
+    <a class="btn" href="{{ url_for('pages.users_list', refresh=1) }}">🔄 刷新在线状态</a>
+    <a class="btn btn-primary" href="{{ url_for('pages.users_new') }}">+ 新建用户</a>
+  </div>
 </div>
+
+{% if refreshed %}
+<div class="flash flash-success" style="margin-bottom: 12px;">✓ 已刷新在线状态</div>
+{% endif %}
 
 <table class="table">
   <thead>
-    <tr><th>ID</th><th>姓名</th><th>角色</th><th>操作</th></tr>
+    <tr><th>ID</th><th>姓名</th><th>角色</th><th>在线状态</th><th>操作</th></tr>
   </thead>
   <tbody>
     {% for u in users %}
@@ -27,9 +34,24 @@
           <span class="badge badge-role-user">user</span>
         {% endif %}
       </td>
+      <td>
+        {% if u.is_online %}
+          <span class="online-dot online"></span><span style="color: #16a34a;">在线</span>
+        {% else %}
+          <span class="online-dot offline"></span><span style="color: #94a3b8;">离线</span>
+        {% endif %}
+        <div class="hint">{{ u.last_active_human }}</div>
+      </td>
       <td class="actions-cell">
         {% if manage_perms.get(u.id) %}
           <a class="btn btn-sm" href="{{ url_for('pages.users_edit', user_id=u.id) }}">编辑</a>
+        {% endif %}
+        {% if kick_perms.get(u.id) %}
+          <form method="POST" action="{{ url_for('pages.users_kick', user_id=u.id) }}" class="inline-form"
+                data-confirm="确定踢 {{ u.name }} 下线？将终止其所有设备的登录。">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-sm btn-warning">⚡ 踢下线</button>
+          </form>
         {% endif %}
         {% if delete_perms.get(u.id) %}
           <form method="POST" action="{{ url_for('pages.users_delete', user_id=u.id) }}" class="inline-form" data-confirm="确定删除 {{ u.name }}？">
@@ -40,7 +62,7 @@
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="4" class="empty">暂无用户</td></tr>
+    <tr><td colspan="5" class="empty">暂无用户</td></tr>
     {% endfor %}
   </tbody>
 </table>

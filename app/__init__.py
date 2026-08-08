@@ -231,6 +231,20 @@ def ensure_auth_schema():
                             INDEX idx_ls_expires (expires_at)
                         ) {db.engine_clause()}""")
 
+            # ===== login_sessions.last_active_at 列迁移 =====
+            if is_pg:
+                cur.execute(
+                    "SELECT COUNT(*) AS n FROM information_schema.columns "
+                    "WHERE table_catalog = current_database() AND table_name = 'login_sessions' AND column_name = 'last_active_at'"
+                )
+            else:
+                cur.execute(
+                    f"SELECT COUNT(*) AS n FROM information_schema.columns "
+                    f"WHERE table_schema = {db.schema_name_query()} AND table_name = 'login_sessions' AND column_name = 'last_active_at'"
+                )
+            if cur.fetchone()["n"] == 0:
+                cur.execute(f"ALTER TABLE login_sessions ADD COLUMN last_active_at {db.last_active_ddl()}")
+
             conn.commit()
         finally:
             # ===== 释放锁 =====

@@ -1,3 +1,4 @@
+from datetime import datetime
 from functools import wraps
 
 from flask import (
@@ -218,27 +219,96 @@ def register():
     return render_template("register.html", error=error, form=form)
 
 
+def _humanize_time(dt):
+    """把 datetime 转成人类可读的相对时间。"""
+    if not dt:
+        return "从未"
+    delta = datetime.utcnow() - dt
+    seconds = int(delta.total_seconds())
+    if seconds < 0:
+        return "刚刚"
+    if seconds < 60:
+        return "刚刚"
+    if seconds < 3600:
+        return f"{seconds // 60} 分钟前"
+    if seconds < 86400:
+        return f"{seconds // 3600} 小时前"
+    return f"{seconds // 86400} 天前"
+
+
+def _kick_perm(target_user, me) -> bool:
+    """me 能否踢 target_user 下线。"""
+    if target_user["id"] == me["id"]:
+        return False
+    if me["role"] == "admin" and target_user["role"] != "user":
+        return False
+    return True
+
+
 @bp.route("/users", methods=["GET"])
 @role_required("admin", "root")
 def users_list():
+    db = get_engine()
+    refreshed = request.args.get("refresh") == "1"
     with get_conn() as conn, make_cursor(conn) as cur:
-        cur.execute("SELECT id, name, role FROM users ORDER BY id")
+        cur.execute(f"""
+            SELECT u.id, u.name, u.role,
+                   MAX(s.last_active_at) AS last_active,
+                   EXISTS(
+                     SELECT 1 FROM login_sessions s2
+                       WHERE s2.user_id = u.id
+                         AND s2.expires_at > {db.now_utc()}
+                         AND s2.last_active_at > {db.now_utc()} - INTERVAL '5 minute'
+                   ) AS is_online
+              FROM users u
+              LEFT JOIN login_sessions s ON s.user_id = u.id
+             GROUP BY u.id, u.name, u.role
+             ORDER BY u.id
+        """)
         users = cur.fetchall()
     me_id = g.user["id"]
     manage_perms = {}
     delete_perms = {}
+    kick_perms = {}
     for u in users:
+        u["last_active_human"] = _humanize_time(u["last_active"])
         can_m, _ = _can_manage(u, g.user)
         manage_perms[u["id"]] = can_m
         can_del = can_m and u["id"] != me_id and not (u["role"] == "root" and count_roots() <= 1)
         delete_perms[u["id"]] = can_del
+        kick_perms[u["id"]] = _kick_perm(u, g.user)
     return render_template(
         "users/list.html",
         users=users,
         me_id=me_id,
         manage_perms=manage_perms,
         delete_perms=delete_perms,
+        kick_perms=kick_perms,
+        refreshed=refreshed,
     )
+
+
+@bp.route("/users/<int:user_id>/kick", methods=["POST"])
+@role_required("admin", "root")
+def users_kick(user_id):
+    me = g.user
+    target = load_user(user_id)
+    if not target:
+        abort(404)
+    if target["id"] == me["id"]:
+        flash("不能踢自己下线", "error")
+        return redirect(url_for("pages.users_list"))
+    if me["role"] == "admin" and target["role"] != "user":
+        flash("admin 只能踢 user 角色", "error")
+        return redirect(url_for("pages.users_list"))
+    if target["role"] == "root" and count_roots() <= 1:
+        flash("至少保留一个 root", "error")
+        return redirect(url_for("pages.users_list"))
+    with get_conn() as conn, make_cursor(conn) as cur:
+        cur.execute("DELETE FROM login_sessions WHERE user_id = %s", (user_id,))
+        conn.commit()
+    flash(f"已踢 {target['name']} 下线", "success")
+    return redirect(url_for("pages.users_list"))
 
 
 @bp.route("/users/new", methods=["GET", "POST"], strict_slashes=False)

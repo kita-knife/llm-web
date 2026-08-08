@@ -40,6 +40,10 @@ class DatabaseEngine(ABC):
         """users.role 列 DDL。"""
 
     @abstractmethod
+    def last_active_ddl(self) -> str:
+        """login_sessions.last_active_at 列 DDL。"""
+
+    @abstractmethod
     def auto_pk(self) -> str:
         """自增主键列类型。"""
 
