@@ -242,6 +242,8 @@ def _kick_perm(target_user, me) -> bool:
         return False
     if me["role"] == "admin" and target_user["role"] != "user":
         return False
+    if me["role"] == "root" and target_user["role"] == "root":
+        return False
     return True
 
 
@@ -300,6 +302,9 @@ def users_kick(user_id):
         return redirect(url_for("pages.users_list"))
     if me["role"] == "admin" and target["role"] != "user":
         flash("admin 只能踢 user 角色", "error")
+        return redirect(url_for("pages.users_list"))
+    if me["role"] == "root" and target["role"] == "root":
+        flash("root 账号不能互相踢下线", "error")
         return redirect(url_for("pages.users_list"))
     if target["role"] == "root" and count_roots() <= 1:
         flash("至少保留一个 root", "error")
